@@ -1,0 +1,26 @@
+# Binaries & build artifacts
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+api
+
+# Test and coverage artifacts
+*.out
+coverage.html
+
+# Local environment configuration
+.env
+!.env.example
+
+# IDE & Editor folders
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Operating System files
+.DS_Store
+Thumbs.db
