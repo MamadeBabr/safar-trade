@@ -1,0 +1,233 @@
+// Package main wires the application: configuration, database connection,
+// dependency injection, routing, middleware, and graceful shutdown.
+//
+// Node comparison:
+// In an Express app, this corresponds to your `index.ts` / `server.ts` file,
+// where you initialize Prisma/pg, configure `app.use(...)`, and call `app.listen()`.
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/go-playground/validator/v10"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/hossen/safar-trade/internal/config"
+	"github.com/hossen/safar-trade/internal/handler"
+	"github.com/hossen/safar-trade/internal/ingestion/binance"
+	"github.com/hossen/safar-trade/internal/ingestion/forexfactory"
+	"github.com/hossen/safar-trade/internal/middleware"
+	"github.com/hossen/safar-trade/internal/repository"
+	redisStore "github.com/hossen/safar-trade/internal/storage/redis"
+	"github.com/hossen/safar-trade/internal/scheduler"
+	"github.com/hossen/safar-trade/internal/service"
+)
+
+func main() {
+	// 1. Load typed configuration
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 2. Initialize structured logger (log/slog)
+	// Node comparison: Like choosing between Pino JSON formatting in production vs pretty-print in dev.
+	var logHandler slog.Handler
+	logLevel := parseLogLevel(cfg.LogLevel)
+	opts := &slog.HandlerOptions{Level: logLevel}
+
+	if cfg.AppEnv == "production" {
+		logHandler = slog.NewJSONHandler(os.Stdout, opts)
+	} else {
+		logHandler = slog.NewTextHandler(os.Stdout, opts)
+	}
+	logger := slog.New(logHandler)
+	slog.SetDefault(logger)
+
+	logger.Info("starting application",
+		slog.String("env", cfg.AppEnv),
+		slog.Int("port", cfg.Port),
+	)
+
+	// 3. Setup root context that cancels on SIGINT (Ctrl+C) or SIGTERM (Docker/K8s stop signal)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop() // Cleans up signal listener when main exits
+
+	// 4. Initialize PostgreSQL connection pool (pgxpool)
+	poolConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("failed to parse database connection URL", slog.Any("error", err))
+		os.Exit(1)
+	}
+	poolConfig.MaxConns = 25
+	poolConfig.MinConns = 5
+	poolConfig.MaxConnLifetime = 1 * time.Hour
+
+	// Use an initial ping context with a 5-second deadline
+	connectCtx, cancelConnect := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelConnect()
+
+	dbPool, err := pgxpool.NewWithConfig(connectCtx, poolConfig)
+	if err != nil {
+		logger.Error("unable to connect to database pool", slog.Any("error", err))
+		os.Exit(1)
+	}
+	defer dbPool.Close() // Drains connections cleanly on termination
+
+	// Ping database to verify connection health
+	if err := dbPool.Ping(connectCtx); err != nil {
+		logger.Warn("database ping failed: database may be offline or starting up", slog.Any("error", err))
+	} else {
+		logger.Info("database connection established successfully")
+	}
+
+	// 5. Initialize Redis connection pool
+	redisClient, err := redisStore.NewClient(ctx, cfg.RedisURL, logger)
+	if err != nil {
+		logger.Warn("redis connection initialized with warning: redis may be offline or starting up", slog.Any("error", err))
+	} else {
+		defer redisClient.Close()
+	}
+	candleStore := redisStore.NewCandleStore(redisClient, 0)
+
+	// 5. Instantiate dependencies (Clean Architecture / Dependency Injection)
+	validate := validator.New()
+
+	// Note domain
+	noteRepo := repository.NewNoteRepository(dbPool)
+	noteService := service.NewNoteService(noteRepo)
+	noteHandler := handler.NewNoteHandler(noteService, validate)
+
+	// Forex Factory Ingestion domain
+	economicEventRepo := repository.NewEconomicEventRepository(dbPool)
+	ffClient, err := forexfactory.NewClient(logger)
+	if err != nil {
+		logger.Error("failed to initialize Forex Factory TLS client", slog.Any("error", err))
+		os.Exit(1)
+	}
+	ffIngester := forexfactory.NewIngester(ffClient, economicEventRepo, logger, cfg.ForexFactoryJSONPath)
+	ingestionHandler := handler.NewIngestionHandler(ffIngester, economicEventRepo, cfg.ForexFactoryJSONPath)
+
+	// 6. Setup Router (Standard Library Go 1.22+ ServeMux)
+	mux := http.NewServeMux()
+	noteHandler.RegisterRoutes(mux)
+	ingestionHandler.RegisterRoutes(mux)
+
+	// 7. Apply Middleware Chain
+	appHandler := middleware.Chain(
+		mux,
+		middleware.Recoverer(logger),
+		middleware.RequestID,
+		middleware.Logger(logger),
+		middleware.CORS(cfg.CORSOrigin),
+	)
+
+	// 8. Start Background Scheduler if enabled
+	var sched *scheduler.Scheduler
+	if cfg.EnableScheduler {
+		sched = scheduler.NewScheduler(ffIngester, logger, cfg.IngestionInterval)
+		sched.Start(ctx)
+	}
+
+	// 9. Start Binance Spot & Futures WebSocket Collector if enabled
+	var binanceCollector *binance.Collector
+	if cfg.EnableBinance {
+		var symbols []string
+		if cfg.BinanceSymbols != "" {
+			for _, s := range strings.Split(cfg.BinanceSymbols, ",") {
+				if trimmed := strings.TrimSpace(s); trimmed != "" {
+					symbols = append(symbols, trimmed)
+				}
+			}
+		}
+
+		candleRepo := repository.NewCandleRepository(dbPool)
+		binanceCollector = binance.NewCollector(
+			binance.CollectorConfig{
+				SpotWSURL:           cfg.BinanceSpotWSURL,
+				FuturesWSURL:        cfg.BinanceFuturesWSURL,
+				FuturesSymbolSuffix: "_FUTURES",
+				FlushInterval:       cfg.BinanceFlushInterval,
+				ExplicitSymbols:     symbols,
+			},
+			candleRepo,
+			candleStore,
+			logger,
+		)
+
+		go func() {
+			if err := binanceCollector.Start(ctx); err != nil {
+				logger.Error("failed to start Binance collector", slog.Any("error", err))
+			}
+		}()
+	}
+
+	// 9. Configure HTTP Server
+	server := &http.Server{
+		Addr:         fmt.Sprintf(":%d", cfg.Port),
+		Handler:      appHandler,
+		ReadTimeout:  cfg.ServerTimeout,
+		WriteTimeout: cfg.ServerTimeout,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	// 10. Start server in a background Goroutine
+	serverErrors := make(chan error, 1)
+	go func() {
+		logger.Info("HTTP server listening", slog.String("addr", server.Addr))
+		err := server.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErrors <- err
+		}
+	}()
+
+	// 11. Wait for either an error or shutdown signal
+	select {
+	case err := <-serverErrors:
+		logger.Error("server listener error", slog.Any("error", err))
+		os.Exit(1)
+	case <-ctx.Done():
+		logger.Info("shutdown signal received, initiating graceful shutdown")
+	}
+
+	// 12. Graceful Shutdown
+	if binanceCollector != nil {
+		binanceCollector.Stop() // Flush cached candles and disconnect streams
+	}
+	if sched != nil {
+		sched.Wait() // Wait for active background ingestion job to finish
+	}
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), cfg.ShutdownPeriod)
+	defer cancelShutdown()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		logger.Error("server forced shutdown due to error", slog.Any("error", err))
+		_ = server.Close()
+	}
+
+	logger.Info("server exited gracefully")
+}
+
+func parseLogLevel(levelStr string) slog.Level {
+	switch levelStr {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}

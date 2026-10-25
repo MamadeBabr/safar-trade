@@ -1,6 +1,7 @@
 version: "2"
 sql:
-  - schema: "../migrations"
+  - engine: "postgresql"
+    schema: "../migrations"
     queries: "queries"
     gen:
       go:
@@ -9,3 +10,12 @@ sql:
         sql_package: "pgx/v5"
         emit_json_tags: true
         emit_empty_slices: true
+        overrides:
+          - db_type: "timestamptz"
+            go_type: "time.Time"
+          - db_type: "timestamp with time zone"
+            go_type: "time.Time"
+          - column: "notes.user_id"
+            go_type:
+              type: "int64"
+              pointer: true

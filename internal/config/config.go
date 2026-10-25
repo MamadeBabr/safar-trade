@@ -29,6 +29,12 @@ type Config struct {
 	EnableScheduler      bool          // Background ingestion worker toggle
 	IngestionInterval    time.Duration // Periodic ingestion interval (e.g. "1h")
 	ForexFactoryJSONPath string        // Path to output forexfactory.json (empty to disable)
+	RedisURL             string        // Redis connection URL (e.g. redis://localhost:6379/0)
+	EnableBinance        bool          // Toggle Binance WebSocket collector
+	BinanceSpotWSURL     string        // Spot WebSocket URL
+	BinanceFuturesWSURL  string        // Futures WebSocket URL
+	BinanceFlushInterval time.Duration // Interval for batch persisting candles to PostgreSQL
+	BinanceSymbols       string        // Optional comma-separated symbols whitelist (empty = auto-discover)
 }
 
 // Load reads configuration from environment variables, falling back to sensible defaults.
@@ -48,6 +54,12 @@ func Load() (*Config, error) {
 		EnableScheduler:      getEnvAsBool("ENABLE_INGESTION_SCHEDULER", true),
 		IngestionInterval:    getEnvAsDuration("INGESTION_INTERVAL", 1*time.Hour),
 		ForexFactoryJSONPath: getEnv("FOREX_FACTORY_JSON_PATH", "forexfactory.json"),
+		RedisURL:             getEnv("REDIS_URL", "redis://localhost:6379/0"),
+		EnableBinance:        getEnvAsBool("ENABLE_BINANCE_COLLECTOR", true),
+		BinanceSpotWSURL:     getEnv("BINANCE_SPOT_WS_URL", "wss://stream.binance.com:9443/stream"),
+		BinanceFuturesWSURL:  getEnv("BINANCE_FUTURES_WS_URL", "wss://fstream.binance.com/stream"),
+		BinanceFlushInterval: getEnvAsDuration("BINANCE_FLUSH_INTERVAL", 3*time.Second),
+		BinanceSymbols:       getEnv("BINANCE_SYMBOLS", ""),
 	}
 
 	if err := cfg.validate(); err != nil {
