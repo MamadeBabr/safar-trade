@@ -33,7 +33,6 @@ type candleProcessor struct {
 	// Queue of finalized (closed) timeframe candles awaiting PostgreSQL persistence
 	queueMu        sync.Mutex
 	finalizedQueue map[Timeframe][]TimeframeCandle
-	totalUpdates   int64
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -110,21 +109,6 @@ func (p *candleProcessor) Process(candle *model.Candle) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.totalUpdates++
-	if p.totalUpdates == 1 {
-		p.logger.Info("CandleProcessor received first candle update",
-			slog.String("symbol", candle.Symbol),
-			slog.String("market", candle.Market),
-			slog.String("price", candle.Close),
-			slog.Bool("is_closed", candle.IsClosed),
-		)
-	} else if p.totalUpdates%100 == 0 {
-		p.logger.Info("CandleProcessor processing updates",
-			slog.Int64("total_updates", p.totalUpdates),
-			slog.String("sample_symbol", candle.Symbol),
-		)
-	}
-
 	for _, tf := range AllTimeframes {
 		bucketStart := CalculateBucketTime(candle.OpenTime, tf)
 		activeMap := p.activeCandles[tf]
@@ -148,10 +132,6 @@ func (p *candleProcessor) Process(candle *model.Candle) {
 				p.queueMu.Lock()
 				p.finalizedQueue[tf] = append(p.finalizedQueue[tf], *newCandle)
 				p.queueMu.Unlock()
-				p.logger.Info("1m candle closed, queued for database persistence",
-					slog.String("symbol", candle.Symbol),
-					slog.Int64("t", bucketStart),
-				)
 			}
 			continue
 		}
@@ -172,10 +152,6 @@ func (p *candleProcessor) Process(candle *model.Candle) {
 				p.queueMu.Lock()
 				p.finalizedQueue[tf] = append(p.finalizedQueue[tf], finalized)
 				p.queueMu.Unlock()
-				p.logger.Info("1m candle closed, queued for database persistence",
-					slog.String("symbol", finalized.Symbol),
-					slog.Int64("t", finalized.T),
-				)
 			}
 			continue
 		}
@@ -188,12 +164,6 @@ func (p *candleProcessor) Process(candle *model.Candle) {
 			p.queueMu.Lock()
 			p.finalizedQueue[tf] = append(p.finalizedQueue[tf], finalized)
 			p.queueMu.Unlock()
-
-			p.logger.Info("timeframe candle rollover finalized, queued for database",
-				slog.String("timeframe", string(tf)),
-				slog.String("symbol", finalized.Symbol),
-				slog.Int64("t", finalized.T),
-			)
 
 			// Reset current slot with the newly started bucket
 			current.T = bucketStart
