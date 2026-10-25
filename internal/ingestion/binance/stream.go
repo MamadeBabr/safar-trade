@@ -43,7 +43,8 @@ type Stream struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	reqIDCounter int64
+	reqIDCounter   int64
+	messageCounter int64
 }
 
 // NewStream creates a new Binance WebSocket stream manager.
@@ -128,11 +129,18 @@ func (s *Stream) connectAndServe(log *slog.Logger, streams []string) error {
 
 	conn, _, err := dialer.DialContext(s.ctx, s.opts.URL, nil)
 	if err != nil {
+		log.Error("failed to connect to Binance WebSocket URL",
+			slog.String("url", s.opts.URL),
+			slog.Any("error", err),
+		)
 		return fmt.Errorf("dial failed: %w", err)
 	}
 	defer conn.Close()
 
-	log.Info("websocket connected, subscribing to streams", slog.Int("count", len(streams)))
+	log.Info("Binance websocket connected successfully",
+		slog.String("url", s.opts.URL),
+		slog.Int("streams_count", len(streams)),
+	)
 
 	// Channel for serializing WebSocket writes
 	writeChan := make(chan []byte, 100)
@@ -182,7 +190,7 @@ func (s *Stream) connectAndServe(log *slog.Logger, streams []string) error {
 				time.Sleep(SubscribeInterval)
 			}
 		}
-		log.Info("all subscribe batches sent for connection")
+		log.Info("all subscribe batches sent to Binance websocket", slog.Int("total_streams", len(streams)))
 	}()
 
 	// Scheduled connection renewal to avoid 24h Binance disconnects
@@ -241,16 +249,34 @@ func (s *Stream) handleMessage(raw []byte) {
 		s.dispatchCandle(&directEvent)
 		return
 	}
+
+	// Check if this is a subscription response from Binance
+	var subResp struct {
+		Result any `json:"result"`
+		ID     int `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &subResp); err == nil && subResp.ID > 0 {
+		s.logger.Info("Binance subscription acknowledged by server", slog.Int("id", subResp.ID))
+		return
+	}
 }
 
 func (s *Stream) dispatchCandle(event *RawKlineEvent) {
-	if event == nil || event.Kline.Symbol == "" {
+	if event == nil {
+		return
+	}
+
+	sym := event.Symbol
+	if sym == "" {
+		sym = event.Kline.Symbol
+	}
+	if sym == "" {
 		return
 	}
 
 	k := event.Kline
 	candle := &model.Candle{
-		Symbol:    fmt.Sprintf("%s%s", event.Symbol, s.opts.SymbolSuffix),
+		Symbol:    fmt.Sprintf("%s%s", sym, s.opts.SymbolSuffix),
 		Market:    s.opts.Market,
 		OpenTime:  k.StartTime,
 		CloseTime: k.EndTime,
@@ -260,6 +286,23 @@ func (s *Stream) dispatchCandle(event *RawKlineEvent) {
 		Close:     k.Close,
 		Volume:    k.Volume,
 		IsClosed:  k.IsClosed,
+	}
+
+	count := atomic.AddInt64(&s.messageCounter, 1)
+	if count == 1 {
+		s.logger.Info("received FIRST live candle tick from Binance",
+			slog.String("market", candle.Market),
+			slog.String("symbol", candle.Symbol),
+			slog.String("price", candle.Close),
+			slog.Bool("is_closed", candle.IsClosed),
+		)
+	} else if count%100 == 0 {
+		s.logger.Info("streaming Binance candle ticks",
+			slog.String("market", candle.Market),
+			slog.Int64("total_ticks", count),
+			slog.String("latest_symbol", candle.Symbol),
+			slog.String("price", candle.Close),
+		)
 	}
 
 	if s.opts.OnCandle != nil {

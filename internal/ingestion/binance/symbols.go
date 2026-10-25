@@ -15,6 +15,14 @@ const (
 	FuturesExchangeInfoURL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 )
 
+// DefaultFallbackSymbols contains top high-volume USDT trading pairs used if the REST API is unreachable.
+var DefaultFallbackSymbols = []string{
+	"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+	"DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT",
+	"NEARUSDT", "APTUSDT", "DOTUSDT", "PEPEUSDT", "SHIBUSDT",
+	"LTCUSDT", "TRXUSDT", "TONUSDT", "MATICUSDT", "UNIUSDT",
+}
+
 type spotExchangeInfoResponse struct {
 	Symbols []struct {
 		Symbol               string `json:"symbol"`
@@ -44,7 +52,7 @@ type SymbolFetcher struct {
 func NewSymbolFetcher(logger *slog.Logger) *SymbolFetcher {
 	return &SymbolFetcher{
 		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
+			Timeout: 10 * time.Second,
 		},
 		logger: logger,
 	}
@@ -52,14 +60,30 @@ func NewSymbolFetcher(logger *slog.Logger) *SymbolFetcher {
 
 // GetActiveSymbols retrieves active USDT trading symbols for the given market ("spot" or "futures").
 func (f *SymbolFetcher) GetActiveSymbols(ctx context.Context, market string) ([]string, error) {
+	var symbols []string
+	var err error
+
+	f.logger.Info("fetching active symbols from Binance official REST API", slog.String("market", market))
+
 	switch strings.ToLower(market) {
 	case "spot":
-		return f.fetchSpotSymbols(ctx)
+		symbols, err = f.fetchSpotSymbols(ctx)
 	case "futures":
-		return f.fetchFuturesSymbols(ctx)
+		symbols, err = f.fetchFuturesSymbols(ctx)
 	default:
 		return nil, fmt.Errorf("unknown market: %s (supported: spot, futures)", market)
 	}
+
+	if err != nil || len(symbols) == 0 {
+		f.logger.Warn("failed to fetch symbols from Binance REST API, using default top USDT symbols fallback",
+			slog.String("market", market),
+			slog.Any("error", err),
+			slog.Int("fallback_count", len(DefaultFallbackSymbols)),
+		)
+		return DefaultFallbackSymbols, nil
+	}
+
+	return symbols, nil
 }
 
 func (f *SymbolFetcher) fetchSpotSymbols(ctx context.Context) ([]string, error) {
@@ -85,8 +109,7 @@ func (f *SymbolFetcher) fetchSpotSymbols(ctx context.Context) ([]string, error) 
 
 	var symbols []string
 	for _, s := range data.Symbols {
-		// Only active TRADING symbols quoted in USDT
-		if s.Status == "TRADING" && s.QuoteAsset == "USDT" && (s.IsSpotTradingAllowed || s.Status == "TRADING") {
+		if s.Status == "TRADING" && s.QuoteAsset == "USDT" {
 			symbols = append(symbols, s.Symbol)
 		}
 	}
@@ -118,7 +141,6 @@ func (f *SymbolFetcher) fetchFuturesSymbols(ctx context.Context) ([]string, erro
 
 	var symbols []string
 	for _, s := range data.Symbols {
-		// Only active TRADING contracts quoted in USDT
 		status := s.Status
 		if status == "" {
 			status = s.ContractStatus

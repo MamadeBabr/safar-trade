@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/hossen/safar-trade/internal/model"
-	"github.com/hossen/safar-trade/internal/repository"
 	redisStore "github.com/hossen/safar-trade/internal/storage/redis"
 )
 
@@ -23,21 +22,23 @@ type CollectorConfig struct {
 // Collector coordinates the Binance Spot & Futures ingestion pipeline.
 type Collector struct {
 	cfg         CollectorConfig
-	repo        repository.CandleRepository
 	candleStore redisStore.CandleStore
 	logger      *slog.Logger
 
 	fetcher       *SymbolFetcher
 	spotStream    *Stream
 	futuresStream *Stream
-	spotBuffer    *LiveBuffer
-	futuresBuffer *LiveBuffer
+	listeners     []func(candle *model.Candle)
+}
+
+// RegisterCandleListener attaches a callback invoked on every incoming candle tick.
+func (c *Collector) RegisterCandleListener(fn func(candle *model.Candle)) {
+	c.listeners = append(c.listeners, fn)
 }
 
 // NewCollector constructs a new Binance Ingestion Collector.
 func NewCollector(
 	cfg CollectorConfig,
-	repo repository.CandleRepository,
 	candleStore redisStore.CandleStore,
 	logger *slog.Logger,
 ) *Collector {
@@ -56,7 +57,6 @@ func NewCollector(
 
 	return &Collector{
 		cfg:         cfg,
-		repo:        repo,
 		candleStore: candleStore,
 		logger:      logger,
 		fetcher:     NewSymbolFetcher(logger),
@@ -88,21 +88,14 @@ func (c *Collector) Start(ctx context.Context) error {
 		}
 	}
 
-	// 2. Initialize database batch buffers
-	c.spotBuffer = NewLiveBuffer(c.repo, c.logger.With(slog.String("buffer", "spot")), c.cfg.FlushInterval, 500)
-	c.futuresBuffer = NewLiveBuffer(c.repo, c.logger.With(slog.String("buffer", "futures")), c.cfg.FlushInterval, 500)
-
-	c.spotBuffer.StartFlushing(ctx)
-	c.futuresBuffer.StartFlushing(ctx)
-
-	// 3. Initialize WebSocket streams
+	// 2. Initialize WebSocket streams
 	c.spotStream = NewStream(StreamOptions{
 		URL:          c.cfg.SpotWSURL,
 		Market:       "spot",
 		Symbols:      spotSymbols,
 		SymbolSuffix: "",
 		OnCandle: func(candle *model.Candle) {
-			c.handleCandle(candle, c.spotBuffer)
+			c.handleCandle(candle)
 		},
 	}, c.logger)
 
@@ -112,7 +105,7 @@ func (c *Collector) Start(ctx context.Context) error {
 		Symbols:      futuresSymbols,
 		SymbolSuffix: c.cfg.FuturesSymbolSuffix,
 		OnCandle: func(candle *model.Candle) {
-			c.handleCandle(candle, c.futuresBuffer)
+			c.handleCandle(candle)
 		},
 	}, c.logger)
 
@@ -126,7 +119,7 @@ func (c *Collector) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop gracefully stops streams and flushes all remaining cached candles to PostgreSQL.
+// Stop gracefully stops streams.
 func (c *Collector) Stop() {
 	c.logger.Info("stopping Binance collector...")
 
@@ -137,18 +130,11 @@ func (c *Collector) Stop() {
 		c.futuresStream.Stop()
 	}
 
-	if c.spotBuffer != nil {
-		c.spotBuffer.StopFlushing()
-	}
-	if c.futuresBuffer != nil {
-		c.futuresBuffer.StopFlushing()
-	}
-
 	c.logger.Info("Binance collector shutdown complete")
 }
 
-func (c *Collector) handleCandle(candle *model.Candle, buffer *LiveBuffer) {
-	// 1. Immediately persist the latest candle to Redis
+func (c *Collector) handleCandle(candle *model.Candle) {
+	// 1. Immediately persist the latest candle snapshot to Redis
 	if c.candleStore != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		if err := c.candleStore.SetLatestCandle(ctx, candle); err != nil {
@@ -160,8 +146,8 @@ func (c *Collector) handleCandle(candle *model.Candle, buffer *LiveBuffer) {
 		cancel()
 	}
 
-	// 2. Persist to PostgreSQL via batch buffer when closed (or closed candle updates)
-	if candle.IsClosed && buffer != nil {
-		buffer.Push(*candle)
+	// 2. Notify downstream processors (multi-timeframe engine for 1m, 5m, 15m, etc.)
+	for _, fn := range c.listeners {
+		fn(candle)
 	}
 }

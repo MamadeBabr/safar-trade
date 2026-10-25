@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -26,10 +27,13 @@ import (
 	"github.com/hossen/safar-trade/internal/ingestion/binance"
 	"github.com/hossen/safar-trade/internal/ingestion/forexfactory"
 	"github.com/hossen/safar-trade/internal/middleware"
+	"github.com/hossen/safar-trade/internal/model"
+	tfCandle "github.com/hossen/safar-trade/internal/processing/candle"
 	"github.com/hossen/safar-trade/internal/repository"
-	redisStore "github.com/hossen/safar-trade/internal/storage/redis"
 	"github.com/hossen/safar-trade/internal/scheduler"
 	"github.com/hossen/safar-trade/internal/service"
+	redisStore "github.com/hossen/safar-trade/internal/storage/redis"
+	"github.com/hossen/safar-trade/migrations"
 )
 
 func main() {
@@ -59,7 +63,34 @@ func main() {
 		slog.Int("port", cfg.Port),
 	)
 
-	// 3. Setup root context that cancels on SIGINT (Ctrl+C) or SIGTERM (Docker/K8s stop signal)
+	// 3. Handle optional migration CLI flags (e.g. -migrate=status or -migrate=down)
+	migrateFlag := flag.String("migrate", "up", "migration action: up, down, status")
+	flag.Parse()
+
+	if *migrateFlag == "down" {
+		if err := migrations.Down(cfg.DatabaseURL); err != nil {
+			logger.Error("migration rollback failed", slog.Any("error", err))
+			os.Exit(1)
+		}
+		logger.Info("database rollback completed")
+		return
+	}
+	if *migrateFlag == "status" {
+		if err := migrations.Status(cfg.DatabaseURL); err != nil {
+			logger.Error("migration status check failed", slog.Any("error", err))
+			os.Exit(1)
+		}
+		return
+	}
+
+	// 4. Automatically run embedded database migrations on startup
+	logger.Info("checking and applying database migrations...")
+	if err := migrations.Up(cfg.DatabaseURL, logger); err != nil {
+		logger.Error("failed to apply database migrations", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	// 5. Setup root context that cancels on SIGINT (Ctrl+C) or SIGTERM (Docker/K8s stop signal)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop() // Cleans up signal listener when main exits
 
@@ -69,8 +100,9 @@ func main() {
 		logger.Error("failed to parse database connection URL", slog.Any("error", err))
 		os.Exit(1)
 	}
-	poolConfig.MaxConns = 25
-	poolConfig.MinConns = 5
+	// Tuned for 2GB RAM low-memory environment
+	poolConfig.MaxConns = 10
+	poolConfig.MinConns = 2
 	poolConfig.MaxConnLifetime = 1 * time.Hour
 
 	// Use an initial ping context with a 5-second deadline
@@ -139,8 +171,10 @@ func main() {
 		sched.Start(ctx)
 	}
 
-	// 9. Start Binance Spot & Futures WebSocket Collector if enabled
+	// 9. Start Binance Spot & Futures WebSocket Collector and Multi-Timeframe Processor if enabled
 	var binanceCollector *binance.Collector
+	var tfProcessor tfCandle.Processor
+
 	if cfg.EnableBinance {
 		var symbols []string
 		if cfg.BinanceSymbols != "" {
@@ -151,7 +185,6 @@ func main() {
 			}
 		}
 
-		candleRepo := repository.NewCandleRepository(dbPool)
 		binanceCollector = binance.NewCollector(
 			binance.CollectorConfig{
 				SpotWSURL:           cfg.BinanceSpotWSURL,
@@ -160,10 +193,19 @@ func main() {
 				FlushInterval:       cfg.BinanceFlushInterval,
 				ExplicitSymbols:     symbols,
 			},
-			candleRepo,
 			candleStore,
 			logger,
 		)
+
+		// Initialize multi-timeframe candle processor (5m, 15m, 30m, 60m, 240m, 1d, 1w, 1M)
+		tfRepo := tfCandle.NewRepository(dbPool)
+		tfProcessor = tfCandle.NewProcessor(tfRepo, redisClient, logger, cfg.BinanceFlushInterval)
+		tfProcessor.Start(ctx)
+
+		// Register listener: each candle update immediately updates in-memory timeframe bars & Redis
+		binanceCollector.RegisterCandleListener(func(candle *model.Candle) {
+			tfProcessor.Process(candle)
+		})
 
 		go func() {
 			if err := binanceCollector.Start(ctx); err != nil {
@@ -203,6 +245,9 @@ func main() {
 	// 12. Graceful Shutdown
 	if binanceCollector != nil {
 		binanceCollector.Stop() // Flush cached candles and disconnect streams
+	}
+	if tfProcessor != nil {
+		tfProcessor.Stop() // Flush any remaining finalized timeframe candles to database
 	}
 	if sched != nil {
 		sched.Wait() // Wait for active background ingestion job to finish
