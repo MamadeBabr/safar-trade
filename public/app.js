@@ -347,25 +347,47 @@ function updateTickerData(symbol, candle, flash = true) {
   const prev = state.tickers[symbol];
   state.tickers[symbol] = candle;
 
-  // Flash card if it exists in DOM
+  const card = document.getElementById(`ticker-card-${symbol}`);
+  if (!card) return;
+
+  const open = parseFloat(candle.o || candle.open || 0);
+  const close = parseFloat(candle.c || candle.close || 0);
+  const high = parseFloat(candle.h || candle.high || 0);
+  const low = parseFloat(candle.l || candle.low || 0);
+  const volume = parseFloat(candle.v || candle.volume || 0);
+
+  // 1. Update Price
+  const priceElem = card.querySelector('.ticker-price');
+  if (priceElem && close > 0) {
+    priceElem.textContent = formatPrice(close);
+  }
+
+  // 2. Update 24h Change % Badge
+  const badgeElem = card.querySelector('.ticker-badge');
+  if (badgeElem && open > 0 && close > 0) {
+    const changePercent = ((close - open) / open) * 100;
+    const isPositive = changePercent >= 0;
+    badgeElem.className = `ticker-badge ${isPositive ? 'change-positive' : 'change-negative'}`;
+    badgeElem.textContent = `${isPositive ? '+' : ''}${changePercent.toFixed(2)}%`;
+  }
+
+  // 3. Update High, Low, Volume
+  const metaVals = card.querySelectorAll('.meta-val');
+  if (metaVals.length >= 3) {
+    if (high > 0) metaVals[0].textContent = formatPrice(high);
+    if (low > 0) metaVals[1].textContent = formatPrice(low);
+    if (volume > 0) metaVals[2].textContent = volume.toFixed(2);
+  }
+
+  // 4. Trigger flash pulse animation
   if (flash) {
-    const card = document.getElementById(`ticker-card-${symbol}`);
-    if (card) {
-      const priceElem = card.querySelector('.ticker-price');
-      if (priceElem) {
-        priceElem.textContent = formatPrice(candle.c || candle.close);
-      }
-
-      const prevClose = prev ? parseFloat(prev.c || prev.close) : 0;
-      const currClose = parseFloat(candle.c || candle.close);
-
-      card.classList.remove('flash-up', 'flash-down');
-      void card.offsetWidth; // Force CSS reflow
-      if (currClose >= prevClose) {
-        card.classList.add('flash-up');
-      } else {
-        card.classList.add('flash-down');
-      }
+    const prevClose = prev ? parseFloat(prev.c || prev.close || 0) : 0;
+    card.classList.remove('flash-up', 'flash-down');
+    void card.offsetWidth; // Force CSS reflow to retrigger animation
+    if (close >= prevClose) {
+      card.classList.add('flash-up');
+    } else {
+      card.classList.add('flash-down');
     }
   }
 }

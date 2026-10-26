@@ -371,6 +371,18 @@ body {
   border-radius: var(--radius-sm);
 }
 
+.change-positive {
+  color: var(--color-green);
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.change-negative {
+  color: var(--color-red);
+  background: rgba(244, 63, 94, 0.15);
+  border: 1px solid rgba(244, 63, 94, 0.3);
+}
+
 /* Tick flash animations */
 .flash-up {
   animation: flashGreen 0.75s ease-out;
