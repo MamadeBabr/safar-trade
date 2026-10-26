@@ -4,7 +4,7 @@
 # In Node.js, you define scripts inside package.json ("scripts": { "dev": "...", "build": "..." }).
 # In Go, Makefiles are the standard convention for build automation and developer workflows.
 
-.PHONY: all help run build test test-coverage lint migrate-up migrate-down migrate-status migrate-create sqlc docker-up docker-down tools-install
+.PHONY: all help run seed build test test-coverage lint migrate-up migrate-down migrate-status migrate-create sqlc docker-up docker-down tools-install
 
 # Configuration variables
 MIGRATIONS_DIR := migrations
@@ -17,6 +17,9 @@ help: ## Show this help message
 
 run: ## Run the API server locally
 	go run ./cmd/api
+
+seed: ## Seed the database with demo users, packages, subscriptions, and market data
+	go run ./cmd/seed
 
 build: ## Build the production binary into bin/
 	go build -ldflags="-w -s" -o bin/$(BINARY_NAME) ./cmd/api

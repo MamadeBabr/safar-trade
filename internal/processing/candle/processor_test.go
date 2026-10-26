@@ -23,6 +23,18 @@ func (m *mockRepository) UpsertBatch(ctx context.Context, tf Timeframe, candles 
 	return nil
 }
 
+func (m *mockRepository) GetHistoryByRange(ctx context.Context, tf Timeframe, symbol string, from, to int64) ([]TimeframeCandle, error) {
+	return nil, nil
+}
+
+func (m *mockRepository) GetHistoryByCountback(ctx context.Context, tf Timeframe, symbol string, to int64, countback int) ([]TimeframeCandle, error) {
+	return nil, nil
+}
+
+func (m *mockRepository) GetLiveCandle(ctx context.Context, tf Timeframe, symbol string) (*TimeframeCandle, error) {
+	return nil, nil
+}
+
 func TestProcessorAggregationAndRollover(t *testing.T) {
 	mockRepo := &mockRepository{
 		upserts: make(map[Timeframe][]TimeframeCandle),

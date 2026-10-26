@@ -77,3 +77,22 @@ func CalculateBucketTime(t int64, tf Timeframe) int64 {
 		return t
 	}
 }
+
+// ParseTimeframe parses and validates a string into a supported Timeframe.
+// Also supports common aliases such as 1h, 4h, 1D, 1W.
+func ParseTimeframe(s string) (Timeframe, bool) {
+	switch s {
+	case "1m", "5m", "15m", "30m", "60m", "240m", "1d", "1w", "1M":
+		return Timeframe(s), true
+	case "1h", "60":
+		return TF60m, true
+	case "4h", "240":
+		return TF240m, true
+	case "1D", "D":
+		return TF1d, true
+	case "1W", "W":
+		return TF1w, true
+	default:
+		return "", false
+	}
+}

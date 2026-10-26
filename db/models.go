@@ -8,20 +8,6 @@ import (
 	"time"
 )
 
-type BinanceCandle struct {
-	Symbol    string    `json:"symbol"`
-	Market    string    `json:"market"`
-	OpenTime  int64     `json:"open_time"`
-	CloseTime int64     `json:"close_time"`
-	Open      string    `json:"open"`
-	High      string    `json:"high"`
-	Low       string    `json:"low"`
-	Close     string    `json:"close"`
-	Volume    string    `json:"volume"`
-	IsClosed  bool      `json:"is_closed"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
 
 type EconomicEvent struct {
 	ID         int64     `json:"id"`

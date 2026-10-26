@@ -35,6 +35,10 @@ type Config struct {
 	BinanceFuturesWSURL  string        // Futures WebSocket URL
 	BinanceFlushInterval time.Duration // Interval for batch persisting candles to PostgreSQL
 	BinanceSymbols       string        // Optional comma-separated symbols whitelist (empty = auto-discover)
+	JWTSecret            string        // HMAC secret key for signing JWT tokens
+	JWTAccessTTL         time.Duration // Access token lifetime (default 15m)
+	JWTRefreshTTL        time.Duration // Session/refresh token lifetime (default 7d)
+	SubscriptionCacheTTL time.Duration // Redis subscription status cache TTL
 }
 
 // Load reads configuration from environment variables, falling back to sensible defaults.
@@ -60,6 +64,10 @@ func Load() (*Config, error) {
 		BinanceFuturesWSURL:  getEnv("BINANCE_FUTURES_WS_URL", "wss://fstream.binance.com/stream"),
 		BinanceFlushInterval: getEnvAsDuration("BINANCE_FLUSH_INTERVAL", 3*time.Second),
 		BinanceSymbols:       getEnv("BINANCE_SYMBOLS", ""),
+		JWTSecret:            getEnv("JWT_SECRET", "safar-trade-default-jwt-secret-key-change-in-production"),
+		JWTAccessTTL:         getEnvAsDuration("JWT_ACCESS_TTL", 15*time.Minute),
+		JWTRefreshTTL:        getEnvAsDuration("JWT_REFRESH_TTL", 7*24*time.Hour),
+		SubscriptionCacheTTL: getEnvAsDuration("SUBSCRIPTION_CACHE_TTL", 15*time.Minute),
 	}
 
 	if err := cfg.validate(); err != nil {

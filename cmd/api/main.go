@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humago"
 	"github.com/go-playground/validator/v10"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -150,10 +152,51 @@ func main() {
 	ffIngester := forexfactory.NewIngester(ffClient, economicEventRepo, logger, cfg.ForexFactoryJSONPath)
 	ingestionHandler := handler.NewIngestionHandler(ffIngester, economicEventRepo, cfg.ForexFactoryJSONPath)
 
-	// 6. Setup Router (Standard Library Go 1.22+ ServeMux)
+	// Auth, Subscription & Protected Market Data domains
+	tfRepo := tfCandle.NewRepository(dbPool, redisClient)
+	subStore := redisStore.NewSubscriptionStore(redisClient)
+	userRepo := repository.NewUserRepository(dbPool)
+	packageRepo := repository.NewPackageRepository(dbPool)
+	subRepo := repository.NewSubscriptionRepository(dbPool)
+	sessionRepo := repository.NewSessionRepository(dbPool)
+
+	subService := service.NewSubscriptionService(subRepo, packageRepo, subStore, cfg.SubscriptionCacheTTL)
+	authService := service.NewAuthService(userRepo, sessionRepo, subService, cfg.JWTSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
+
+	authHandler := handler.NewAuthHandler(authService, subService, userRepo)
+	subHandler := handler.NewSubscriptionHandler(subService)
+	dataHandler := handler.NewDataHandler(tfRepo, economicEventRepo)
+
+	// 6. Setup Router & Documentation (Standard Library Go 1.22+ ServeMux + Huma OpenAPI 3.1)
 	mux := http.NewServeMux()
 	noteHandler.RegisterRoutes(mux)
 	ingestionHandler.RegisterRoutes(mux)
+
+	// Configure Huma v2 with automatic interactive OpenAPI documentation at /docs
+	humaConfig := huma.DefaultConfig("Safar Trade API", "1.0.0")
+	if humaConfig.OpenAPI.Components == nil {
+		humaConfig.OpenAPI.Components = &huma.Components{}
+	}
+	humaConfig.OpenAPI.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
+		"bearerAuth": {
+			Type:         "http",
+			Scheme:       "bearer",
+			BearerFormat: "JWT",
+			Description:  "Enter JWT access token with Bearer prefix",
+		},
+	}
+	api := humago.New(mux, humaConfig)
+
+	// Define Huma security and subscription middlewares
+	humaAuthMW := huma.Middlewares{middleware.NewHumaAuthMiddleware(api, authService)}
+	humaSubMW := huma.Middlewares{
+		middleware.NewHumaAuthMiddleware(api, authService),
+		middleware.NewHumaRequireSubscriptionMiddleware(api, subService),
+	}
+
+	authHandler.RegisterRoutes(api, humaAuthMW)
+	subHandler.RegisterRoutes(api, humaAuthMW)
+	dataHandler.RegisterRoutes(api, humaSubMW)
 
 	// 7. Apply Middleware Chain
 	appHandler := middleware.Chain(
@@ -198,7 +241,6 @@ func main() {
 		)
 
 		// Initialize multi-timeframe candle processor (5m, 15m, 30m, 60m, 240m, 1d, 1w, 1M)
-		tfRepo := tfCandle.NewRepository(dbPool)
 		tfProcessor = tfCandle.NewProcessor(tfRepo, redisClient, logger, cfg.BinanceFlushInterval)
 		tfProcessor.Start(ctx)
 
