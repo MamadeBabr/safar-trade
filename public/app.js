@@ -1206,5 +1206,5 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
       fetchLiveTickers();
     }
-  }, 4000);
+  }, 10000);
 });
