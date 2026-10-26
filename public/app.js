@@ -1011,11 +1011,17 @@ function initWebSocket() {
     };
 
     state.ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        handleWSMessage(msg);
-      } catch (err) {
-        console.error('Failed to parse WebSocket message:', err);
+      // The Go backend batches multiple messages in a single frame separated by newlines (\n)
+      const lines = event.data.split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const msg = JSON.parse(trimmed);
+          handleWSMessage(msg);
+        } catch (err) {
+          console.error('Failed to parse WebSocket message:', err, 'Raw line:', trimmed);
+        }
       }
     };
 
