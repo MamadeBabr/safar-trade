@@ -35,6 +35,7 @@ import (
 	"github.com/hossen/safar-trade/internal/scheduler"
 	"github.com/hossen/safar-trade/internal/service"
 	redisStore "github.com/hossen/safar-trade/internal/storage/redis"
+	"github.com/hossen/safar-trade/internal/ws"
 	"github.com/hossen/safar-trade/migrations"
 )
 
@@ -167,10 +168,16 @@ func main() {
 	subHandler := handler.NewSubscriptionHandler(subService)
 	dataHandler := handler.NewDataHandler(tfRepo, economicEventRepo)
 
+	// WebSocket Real-time Hub & Streaming Handler
+	wsHub := ws.NewHub(logger)
+	go wsHub.Run(ctx)
+	wsHandler := handler.NewWSHandler(wsHub, authService, subService, logger)
+
 	// 6. Setup Router & Documentation (Standard Library Go 1.22+ ServeMux + Huma OpenAPI 3.1)
 	mux := http.NewServeMux()
 	noteHandler.RegisterRoutes(mux)
 	ingestionHandler.RegisterRoutes(mux)
+	wsHandler.RegisterRoutes(mux)
 
 	// Configure Huma v2 with automatic interactive OpenAPI documentation at /docs
 	humaConfig := huma.DefaultConfig("Safar Trade API", "1.0.0")
@@ -244,9 +251,25 @@ func main() {
 		tfProcessor = tfCandle.NewProcessor(tfRepo, redisClient, logger, cfg.BinanceFlushInterval)
 		tfProcessor.Start(ctx)
 
-		// Register listener: each candle update immediately updates in-memory timeframe bars & Redis
+		// Register listener: each candle update updates in-memory timeframe bars & Redis, and broadcasts live tick
 		binanceCollector.RegisterCandleListener(func(candle *model.Candle) {
 			tfProcessor.Process(candle)
+			wsHub.BroadcastCandle(candle.Symbol, "1m", ws.CandlePayload{
+				Symbol:    candle.Symbol,
+				Timeframe: "1m",
+				O:         candle.Open,
+				H:         candle.High,
+				L:         candle.Low,
+				C:         candle.Close,
+				V:         candle.Volume,
+				T:         candle.OpenTime,
+				IsClosed:  candle.IsClosed,
+			})
+		})
+
+		// Listen to multi-timeframe bar updates (5m, 15m, 30m, 60m, etc.) and stream to WebSocket
+		tfProcessor.RegisterListener(func(tf tfCandle.Timeframe, c *tfCandle.TimeframeCandle) {
+			wsHub.BroadcastCandle(c.Symbol, string(tf), c)
 		})
 
 		go func() {

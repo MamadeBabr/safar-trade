@@ -18,6 +18,7 @@ type Processor interface {
 	Process(candle *model.Candle)
 	Start(ctx context.Context)
 	Stop()
+	RegisterListener(fn func(tf Timeframe, c *TimeframeCandle))
 }
 
 type candleProcessor struct {
@@ -33,6 +34,8 @@ type candleProcessor struct {
 	// Queue of finalized (closed) timeframe candles awaiting PostgreSQL persistence
 	queueMu        sync.Mutex
 	finalizedQueue map[Timeframe][]TimeframeCandle
+
+	listeners []func(tf Timeframe, c *TimeframeCandle)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -178,7 +181,17 @@ func (p *candleProcessor) Process(candle *model.Candle) {
 	}
 }
 
+// RegisterListener attaches a callback invoked whenever any timeframe bar updates.
+func (p *candleProcessor) RegisterListener(fn func(tf Timeframe, c *TimeframeCandle)) {
+	p.listeners = append(p.listeners, fn)
+}
+
 func (p *candleProcessor) updateRedis(tf Timeframe, c *TimeframeCandle) {
+	// Dispatch to registered in-process listeners (e.g. WebSocket Hub)
+	for _, fn := range p.listeners {
+		fn(tf, c)
+	}
+
 	if p.redisClient == nil {
 		return
 	}
