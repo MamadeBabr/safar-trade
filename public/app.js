@@ -1076,24 +1076,35 @@ function handleWSMessage(msg) {
     if (!candle) return;
 
     const sym = candle.symbol;
-    const tf = candle.timeframe || '1m';
+    // Extract timeframe from msg.data.timeframe OR from topic "candles:SYMBOL:TIMEFRAME"
+    let tf = candle.timeframe;
+    if (!tf && msg.topic) {
+      const parts = msg.topic.split(':');
+      if (parts.length >= 3) {
+        tf = parts[2];
+      }
+    }
+    tf = tf || '1m';
 
     // Update ticker card in Market Watch
     updateTickerData(sym, candle, true);
 
     // If candle belongs to the currently active chart symbol & timeframe, update chart bar in real-time!
-    if (sym === state.selectedSymbol && tf === state.selectedTimeframe && state.candleSeries) {
-      const timeMs = candle.t || candle.open_time || candle.openTime;
-      const bar = {
-        time: Math.floor(timeMs / 1000),
-        open: parseFloat(candle.o || candle.open),
-        high: parseFloat(candle.h || candle.high),
-        low: parseFloat(candle.l || candle.low),
-        close: parseFloat(candle.c || candle.close),
-      };
+    if (sym === state.selectedSymbol && state.candleSeries) {
+      // Direct match on timeframe OR if currently on 1m and receiving 1m ticks
+      if (tf === state.selectedTimeframe) {
+        const timeMs = candle.t || candle.open_time || candle.openTime;
+        const bar = {
+          time: Math.floor(timeMs / 1000),
+          open: parseFloat(candle.o || candle.open),
+          high: parseFloat(candle.h || candle.high),
+          low: parseFloat(candle.l || candle.low),
+          close: parseFloat(candle.c || candle.close),
+        };
 
-      state.candleSeries.update(bar);
-      updatePriceDisplay(bar.close, timeMs);
+        state.candleSeries.update(bar);
+        updatePriceDisplay(bar.close, timeMs);
+      }
     }
   } else if (msg.type === 'alert') {
     handleIncomingAlert(msg.data || msg);
