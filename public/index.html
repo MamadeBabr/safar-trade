@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Safar Trade | Real-time Market Data & Alerts</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <!-- Lightweight Charts for professional candlestick rendering -->
+  <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <div id="app" class="app-container">
+    
+    <!-- Top Navigation Bar -->
+    <header class="top-nav">
+      <div class="nav-brand">
+        <div class="logo-icon">▲</div>
+        <div class="brand-text">
+          <span class="brand-title">SAFAR<span class="accent-text">TRADE</span></span>
+          <span class="brand-subtitle">PRO TERMINAL</span>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <nav class="nav-tabs">
+        <button id="tab-btn-market" class="tab-btn active" onclick="switchTab('market')">
+          <span class="tab-icon">📊</span> Market Watch
+        </button>
+        <button id="tab-btn-chart" class="tab-btn" onclick="switchTab('chart')">
+          <span class="tab-icon">📈</span> In-Depth Chart
+        </button>
+        <button id="tab-btn-subscriptions" class="tab-btn" onclick="switchTab('subscriptions')">
+          <span class="tab-icon">💎</span> Plans & Subscriptions
+        </button>
+        <button id="tab-btn-events" class="tab-btn" onclick="switchTab('events')">
+          <span class="tab-icon">📅</span> Economic Calendar
+        </button>
+        <button id="tab-btn-alerts" class="tab-btn" onclick="switchTab('alerts')">
+          <span class="tab-icon">🔔</span> Live Alerts
+          <span id="alerts-badge" class="badge badge-alert" style="display:none;">0</span>
+        </button>
+      </nav>
+
+      <!-- Connection & User Section -->
+      <div class="nav-actions">
+        <!-- WS Status -->
+        <div id="ws-status" class="status-indicator disconnected" title="WebSocket Status">
+          <span class="pulse-dot"></span>
+          <span id="ws-status-text">Disconnected</span>
+        </div>
+
+        <!-- User Profile / Auth Button -->
+        <div id="user-profile-section" class="user-profile">
+          <!-- Rendered dynamically by app.js -->
+        </div>
+      </div>
+    </header>
+
+    <!-- Global Paywall Alert Banner (Shown when subscription is required) -->
+    <div id="paywall-banner" class="paywall-banner" style="display: none;">
+      <div class="banner-content">
+        <span class="banner-icon">🔒</span>
+        <div class="banner-info">
+          <strong>Subscription Required:</strong> Real-time streaming and candlestick history are reserved for active subscribers.
+        </div>
+        <button class="btn btn-sm btn-primary" onclick="switchTab('subscriptions')">View Plans & Upgrade</button>
+      </div>
+    </div>
+
+    <!-- Main Content Body -->
+    <main class="main-body">
+
+      <!-- TAB 1: Real-time Market Watch (Grid of Live Prices) -->
+      <section id="view-market" class="view-panel active">
+        <div class="panel-header">
+          <div>
+            <h1 class="panel-title">Real-Time Market Watch</h1>
+            <p class="panel-desc">Streaming live candlestick tick prices directly from Binance WebSocket streams.</p>
+          </div>
+          <div class="market-controls">
+            <span class="live-count" id="active-symbols-count">Tracking 10 Symbols</span>
+            <button class="btn btn-outline btn-sm" onclick="fetchLiveTickers()">🔄 Refresh</button>
+          </div>
+        </div>
+
+        <!-- Ticker Cards Grid -->
+        <div id="market-grid" class="market-grid">
+          <!-- Rendered dynamically by app.js -->
+        </div>
+      </section>
+
+      <!-- TAB 2: In-Depth Candlestick Chart & History -->
+      <section id="view-chart" class="view-panel">
+        <div class="panel-header">
+          <div class="chart-symbol-info">
+            <div class="symbol-selector-wrap">
+              <select id="chart-symbol-select" class="select-dropdown" onchange="onSymbolChange(this.value)">
+                <!-- Symbols populated by app.js -->
+              </select>
+            </div>
+            <div id="chart-price-display" class="chart-price-display">
+              <span id="chart-price-val" class="price-val">--</span>
+              <span id="chart-price-time" class="price-time">Live Tick</span>
+            </div>
+          </div>
+
+          <!-- Timeframe & Bar Controls -->
+          <div class="chart-toolbar">
+            <div class="btn-group" id="timeframe-selector">
+              <button class="tf-btn" data-tf="1m" onclick="setTimeframe('1m')">1m</button>
+              <button class="tf-btn" data-tf="5m" onclick="setTimeframe('5m')">5m</button>
+              <button class="tf-btn active" data-tf="15m" onclick="setTimeframe('15m')">15m</button>
+              <button class="tf-btn" data-tf="30m" onclick="setTimeframe('30m')">30m</button>
+              <button class="tf-btn" data-tf="60m" onclick="setTimeframe('60m')">1h</button>
+              <button class="tf-btn" data-tf="240m" onclick="setTimeframe('240m')">4h</button>
+              <button class="tf-btn" data-tf="1d" onclick="setTimeframe('1d')">1D</button>
+            </div>
+
+            <div class="countback-wrap">
+              <label for="chart-countback">Bars:</label>
+              <select id="chart-countback" class="select-dropdown-sm" onchange="setCountback(this.value)">
+                <option value="30">30</option>
+                <option value="50">50</option>
+                <option value="100" selected>100</option>
+                <option value="300">300</option>
+                <option value="500">500</option>
+              </select>
+            </div>
+
+            <button class="btn btn-sm btn-primary" onclick="loadCandleHistory()">Fetch Candles</button>
+          </div>
+        </div>
+
+        <!-- Candlestick Chart Container -->
+        <div class="chart-wrapper">
+          <div id="candlestick-chart-container" class="chart-container"></div>
+          <div id="chart-loader" class="chart-loader" style="display:none;">Loading Candles...</div>
+        </div>
+
+        <!-- Detailed OHLCV Data Table -->
+        <div class="ohlcv-table-container">
+          <div class="table-title-bar">
+            <h3>Historical Data Records</h3>
+            <span id="candles-record-count" class="badge badge-neutral">0 bars</span>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Timestamp (UTC)</th>
+                  <th>Open</th>
+                  <th>High</th>
+                  <th>Low</th>
+                  <th>Close</th>
+                  <th>Volume</th>
+                </tr>
+              </thead>
+              <tbody id="candles-table-body">
+                <tr><td colspan="6" class="text-center text-muted">Select a symbol and timeframe to load candle records.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: Subscriptions & Packages -->
+      <section id="view-subscriptions" class="view-panel">
+        <div class="panel-header">
+          <div>
+            <h1 class="panel-title">Subscription Packages</h1>
+            <p class="panel-desc">Unlock real-time streaming, high timeframe aggregations, and macroeconomic alerts.</p>
+          </div>
+        </div>
+
+        <!-- Current User Subscription Status Card -->
+        <div id="current-subscription-card" class="current-sub-card">
+          <!-- Rendered dynamically by app.js -->
+        </div>
+
+        <!-- Available Packages List -->
+        <div id="packages-grid" class="packages-grid">
+          <!-- Rendered dynamically by app.js -->
+        </div>
+      </section>
+
+      <!-- TAB 4: Economic Calendar -->
+      <section id="view-events" class="view-panel">
+        <div class="panel-header">
+          <div>
+            <h1 class="panel-title">ForexFactory Economic Calendar</h1>
+            <p class="panel-desc">Macroeconomic calendar events affecting global crypto and forex liquidity.</p>
+          </div>
+          <button class="btn btn-outline btn-sm" onclick="loadEconomicEvents()">🔄 Refresh Events</button>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Date & Time</th>
+                <th>Currency</th>
+                <th>Event</th>
+                <th>Impact</th>
+                <th>Actual</th>
+                <th>Forecast</th>
+                <th>Previous</th>
+              </tr>
+            </thead>
+            <tbody id="events-table-body">
+              <tr><td colspan="7" class="text-center text-muted">Loading events...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- TAB 5: Live Alerts Stream -->
+      <section id="view-alerts" class="view-panel">
+        <div class="panel-header">
+          <div>
+            <h1 class="panel-title">Live Notification Feed</h1>
+            <p class="panel-desc">Real-time alerts broadcast from the server over WebSocket topic "alerts".</p>
+          </div>
+          <button class="btn btn-outline btn-sm" onclick="clearAlerts()">Clear Feed</button>
+        </div>
+
+        <div id="alerts-list" class="alerts-list">
+          <div class="empty-state">No alerts received yet. Connecting to live stream...</div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Authentication Modal (Sign In / Register) -->
+    <div id="auth-modal" class="modal-backdrop" style="display:none;">
+      <div class="modal-box">
+        <div class="modal-header">
+          <div class="modal-tabs">
+            <button id="modal-tab-login" class="modal-tab-btn active" onclick="switchAuthMode('login')">Sign In</button>
+            <button id="modal-tab-register" class="modal-tab-btn" onclick="switchAuthMode('register')">Create Account</button>
+          </div>
+          <button class="modal-close-btn" onclick="closeAuthModal()">✕</button>
+        </div>
+
+        <div class="modal-body">
+          <!-- Quick Demo Login Buttons -->
+          <div class="demo-login-box">
+            <span class="demo-label">Quick Test Accounts (Seeded):</span>
+            <div class="demo-btn-group">
+              <button class="btn btn-sm btn-pro" onclick="quickLogin('pro@example.com', 'password123')">
+                ⭐ Login as Pro Trader (Active)
+              </button>
+              <button class="btn btn-sm btn-free" onclick="quickLogin('free@example.com', 'password123')">
+                👤 Login as Free Trader (No Sub)
+              </button>
+            </div>
+          </div>
+
+          <div class="divider"><span>OR ENTER CREDENTIALS</span></div>
+
+          <form id="auth-form" onsubmit="handleAuthSubmit(event)">
+            <div id="name-field-group" class="form-group" style="display: none;">
+              <label for="auth-name">Full Name</label>
+              <input type="text" id="auth-name" class="form-control" placeholder="Jane Doe">
+            </div>
+
+            <div class="form-group">
+              <label for="auth-email">Email Address</label>
+              <input type="email" id="auth-email" class="form-control" placeholder="trader@example.com" required>
+            </div>
+
+            <div class="form-group">
+              <label for="auth-password">Password</label>
+              <input type="password" id="auth-password" class="form-control" placeholder="••••••••" required>
+            </div>
+
+            <div id="auth-error-msg" class="auth-error" style="display:none;"></div>
+
+            <button type="submit" id="auth-submit-btn" class="btn btn-primary btn-block">Sign In</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Notification Toast Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

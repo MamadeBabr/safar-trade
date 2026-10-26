@@ -205,6 +205,10 @@ func main() {
 	subHandler.RegisterRoutes(api, humaAuthMW)
 	dataHandler.RegisterRoutes(api, humaSubMW)
 
+	// Serve Static Frontend UI from ./public
+	fileServer := http.FileServer(http.Dir("./public"))
+	mux.Handle("GET /", fileServer)
+
 	// 7. Apply Middleware Chain
 	appHandler := middleware.Chain(
 		mux,

@@ -193,4 +193,87 @@ func (h *DataHandler) RegisterRoutes(api huma.API, subRequiredMW huma.Middleware
 			},
 		}, nil
 	})
+
+	// 3. Supported Symbols (Public)
+	huma.Register(api, huma.Operation{
+		OperationID: "get-supported-symbols",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/data/symbols",
+		Summary:     "Get supported trading symbols",
+		Description: "Returns active cryptocurrency trading pairs available for live streaming and chart history.",
+		Tags:        []string{"Market Data"},
+	}, func(ctx context.Context, input *struct{}) (*struct {
+		Body struct {
+			Symbols []string `json:"symbols"`
+		}
+	}, error) {
+		symbols := []string{
+			"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+			"DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT",
+			"NEARUSDT", "APTUSDT", "DOTUSDT", "PEPEUSDT", "SHIBUSDT",
+			"LTCUSDT", "TRXUSDT", "TONUSDT", "MATICUSDT", "UNIUSDT",
+		}
+		return &struct {
+			Body struct {
+				Symbols []string `json:"symbols"`
+			}
+		}{
+			Body: struct {
+				Symbols []string `json:"symbols"`
+			}{
+				Symbols: symbols,
+			},
+		}, nil
+	})
+
+	// 4. Live Tickers Snapshot (Public)
+	huma.Register(api, huma.Operation{
+		OperationID: "get-live-tickers",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/data/tickers",
+		Summary:     "Get live price snapshot for multiple symbols",
+		Description: "Fetches the latest live candle for each requested symbol from Redis cache.",
+		Tags:        []string{"Market Data"},
+	}, func(ctx context.Context, input *struct {
+		Symbols string `query:"symbols" example:"BTCUSDT,ETHUSDT,SOLUSDT" doc:"Optional comma-separated symbol whitelist (defaults to top pairs)"`
+	}) (*struct {
+		Body struct {
+			Tickers map[string]*tfCandle.TimeframeCandle `json:"tickers"`
+		}
+	}, error) {
+		var list []string
+		if input.Symbols != "" {
+			for _, s := range strings.Split(input.Symbols, ",") {
+				if trimmed := strings.ToUpper(strings.TrimSpace(s)); trimmed != "" {
+					list = append(list, trimmed)
+				}
+			}
+		}
+		if len(list) == 0 {
+			list = []string{
+				"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+				"DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT",
+			}
+		}
+
+		tickers := make(map[string]*tfCandle.TimeframeCandle, len(list))
+		for _, s := range list {
+			candle, err := h.candleRepo.GetLiveCandle(ctx, tfCandle.TF1m, s)
+			if err == nil && candle != nil {
+				tickers[s] = candle
+			}
+		}
+
+		return &struct {
+			Body struct {
+				Tickers map[string]*tfCandle.TimeframeCandle `json:"tickers"`
+			}
+		}{
+			Body: struct {
+				Tickers map[string]*tfCandle.TimeframeCandle `json:"tickers"`
+			}{
+				Tickers: tickers,
+			},
+		}, nil
+	})
 }
