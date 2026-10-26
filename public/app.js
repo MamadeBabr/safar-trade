@@ -849,17 +849,18 @@ async function loadEconomicEvents() {
         month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
       });
 
-      const impact = (evt.impact || 'low').toLowerCase();
+      const impactName = evt.impact_name || evt.impact || 'Low';
+      const impactLower = impactName.toLowerCase();
       let impactBadge = 'badge-neutral';
-      if (impact === 'high') impactBadge = 'badge-danger';
-      else if (impact === 'medium') impactBadge = 'badge-warning';
+      if (impactLower === 'high') impactBadge = 'badge-danger';
+      else if (impactLower === 'medium') impactBadge = 'badge-warning';
 
       return `
         <tr>
           <td class="font-mono">${dateStr}</td>
           <td><span class="currency-tag">${evt.currency}</span></td>
           <td class="font-medium">${evt.name}</td>
-          <td><span class="badge ${impactBadge}">${evt.impact}</span></td>
+          <td><span class="badge ${impactBadge}">${impactName}</span></td>
           <td class="font-mono text-bold">${evt.actual || '--'}</td>
           <td class="font-mono text-muted">${evt.forecast || '--'}</td>
           <td class="font-mono text-dim">${evt.previous || '--'}</td>
